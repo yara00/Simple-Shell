@@ -1,0 +1,168 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdbool.h>
+#define BUFFER_LEN 1024
+char cmd[BUFFER_LEN];
+char environment_vars[BUFFER_LEN][BUFFER_LEN];
+char vars_index[BUFFER_LEN][BUFFER_LEN];
+int count = 0;
+size_t length;
+char *token;
+char *dollar;
+char* parsedcmd[BUFFER_LEN];
+pid_t pid;
+bool waitFlag;
+bool isLs = false;;
+int i=0;
+void change_dir() {
+ // cd call
+    char cwd[256];
+    char *dir = getcwd(cwd, sizeof(cwd));
+    if((parsedcmd[1] == NULL) || !strcmp(parsedcmd[1],"~") || !strcmp(parsedcmd[1],"..")) {
+        chdir("/yara/home");
+    }
+    else {
+        chdir(strcat(strcat(dir, "/"), parsedcmd[1]));    
+    }        
+}
+void parse_input() {
+    i=0;
+    length = strlen(cmd);
+    if (cmd[length - 1] == '\n') { // replace end of line by end of string
+        cmd[length - 1] = '\0'; 
+    }
+    token = strtok(cmd," ");
+    
+    while(token != NULL) {
+        if (!strcmp(token,"&")) {
+            token = '\0';
+            parsedcmd[i]= token;
+            waitFlag= true;
+            break;
+        }
+        else { 
+            parsedcmd[i++] = token;
+            token = strtok(NULL," ");
+        }
+    parsedcmd[i] = token; // null
+    }
+
+    int j;
+    for(j=0;j<i;j++) {
+            char lol[100];
+            memset(lol, '\0', sizeof(lol));
+            strcpy(lol, parsedcmd[j]);
+            if('$' == lol[0]) {
+                if(!strcmp(cmd, "ls")) isLs = true;
+                // handle export
+                int k;
+                char val[100];
+                memmove(lol, lol + 1, strlen(lol));
+                for(k=0;k<count; k++) {
+                    if(!strcmp(environment_vars[k], lol)) {
+                        strcpy(parsedcmd[1], vars_index[k]);
+                        break;
+                    }
+                }
+           }       
+    }
+
+    if(isLs) {
+        i=1;
+        dollar = strtok(parsedcmd[1]," ");
+        
+        while(dollar != NULL) {
+            parsedcmd[i++] = dollar;
+            dollar = strtok(NULL," ");
+        }
+        parsedcmd[i] = dollar;
+        isLs = false;
+       }
+    
+}
+void shell() {
+    pid = fork();
+    if(pid == -1) { printf("\nForking failed.");}
+    if(pid == 0) {
+        if(execvp(parsedcmd[0], parsedcmd) < 0) {
+            printf("\nExecution failed.");
+            exit(0);
+        } 
+    }
+    else {
+        if(!waitFlag) { waitpid(pid,NULL,0); } //wait for foreground processes
+        else { waitFlag = false;} //background
+    }
+}
+void export() {
+    int l;
+    char tempo[100];
+
+    strcpy(tempo, parsedcmd[1]);
+    for(l=2;l<i;l++) {
+        strcat(tempo, " ");
+        strcat(tempo, parsedcmd[l]);
+    }
+    strcpy(parsedcmd[1], tempo);
+    char *var;
+    char temp[100];
+    strcpy(temp, parsedcmd[1]);
+    var = strtok(temp, "=");
+    strcpy(environment_vars[count], var);   // store env vars 
+    var = strtok(NULL, "=");
+    char value[100];
+    strcpy(value, var);
+    if(value[0] == '"') { //remove quotes
+        memmove(value, value + 1, strlen(value));
+        value[strlen(value) - 1] = '\0';
+    }
+    strcpy(vars_index[count], value); // store value of each var at the corresponding index
+    count++;
+}
+void setup_environment() {
+    int status;
+    int pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) { //handle zombie processes
+        // `pid` exited with `status`
+    }
+    FILE *fp;
+    fp = fopen ("logFile.txt", "a");
+    fputs("Child Process Terminated.\n",fp);
+    fclose(fp);
+}
+
+int main() {
+    while(true) {
+        signal (SIGCHLD, setup_environment);
+        printf("\nyara@yara:~ ");
+        if(!fgets(cmd,BUFFER_LEN, stdin)){} 
+        // split innput to command and arguments
+        parse_input();
+        // exit command
+        if (!strcmp(parsedcmd[0], "exit")) exit(0);
+        // echo command
+        else if (!strcmp(parsedcmd[0], "echo")){
+            printf("\n%s", parsedcmd[1]);
+            continue;
+        }
+        // export command
+        else if (!strcmp(parsedcmd[0], "export")){
+            export();
+            continue;
+        }
+        // cd command
+        else if(!strcmp(parsedcmd[0], "cd")) {
+            change_dir();
+            continue;
+        }
+        // regular commands
+        shell();
+
+    }
+    return 0;
+}
